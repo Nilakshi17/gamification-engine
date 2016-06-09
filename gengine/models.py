@@ -168,10 +168,10 @@ t_achievementcategories = Table('achievementcategories', Base.metadata,
 t_achievements = Table('achievements', Base.metadata,
     Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
     Column('id', ty.Integer, primary_key = True),
-    Column("achievementcategory_id", ty.Integer, ForeignKey("achievementcategories.id", ondelete="SET NULL"), index=True, nullable=True),
+    Column("achievementcategory_id", ty.Integer, index=True, nullable=True),
     Column('name', ty.String(255), nullable = False), #internal use
     Column('maxlevel',ty.Integer, nullable=False, default=1),
-    Column('hidden',ty.Boolean, nullable=False, default=False), 
+    Column('hidden',ty.Boolean, nullable=False, default=False),
     Column('valid_start',ty.Date, nullable=True),
     Column('valid_end',ty.Date, nullable=True),
     Column("lat", ty.Float(Precision=64), nullable=True),
@@ -179,6 +179,10 @@ t_achievements = Table('achievements', Base.metadata,
     Column("max_distance", ty.Integer, nullable=True),
     Column('priority', ty.Integer, index=True, default=0),
     Column('relevance',ty.Enum("friends","city","own", name="relevance_types"), default="own"),
+
+    ForeignKeyConstraint(
+        ['project_id', 'achievementcategory_id'], ['achievementcategories.project_id', 'achievementcategories.id'], ondelete="CASCADE"
+    )
 )
 
 t_goals = Table("goals", Base.metadata,
@@ -195,11 +199,15 @@ t_goals = Table("goals", Base.metadata,
     Column('goal', ty.String(255), nullable=True),
     Column('operator', ty.Enum("geq","leq", name="goal_operators"), nullable=True),
     Column('maxmin', ty.Enum("max","min", name="goal_maxmin"), nullable=True, default="max"),
-    Column('achievement_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), nullable=False),
+    Column('achievement_id', ty.Integer, nullable=False),
     Column('priority', ty.Integer, index=True, default=0),
 
     ForeignKeyConstraint(
         ['project_id', 'name_translation_id'], ['translationvariables.project_id', 'translationvariables.id'], ondelete="RESTRICT"
+    ),
+
+    ForeignKeyConstraint(
+        ['project_id', 'achievement_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
     )
 ) 
 
@@ -317,8 +325,8 @@ t_achievements_rewards = Table('achievements_rewards', Base.metadata,
 
 t_achievements_users = Table('achievements_users', Base.metadata,
     Column('project_id', GUID, primary_key = True),
-    Column('user_id', ty.BigInteger, ForeignKey("users.id"), primary_key = True, index=True, nullable=False),
-    Column('achievement_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), primary_key = True, nullable=False),
+    Column('user_id', ty.BigInteger, primary_key = True, index = True),
+    Column('achievement_id', ty.Integer, primary_key = True, index = True),
     Column('level', ty.Integer, primary_key = True, default=1),
     Column('updated_at', ty.DateTime, nullable = False, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow),
 
