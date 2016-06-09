@@ -2,6 +2,7 @@
 """models including business logic"""
 
 import datetime
+import uuid
 from datetime import timedelta
 
 import hashlib
@@ -21,11 +22,13 @@ from sqlalchemy import (
     text,
     Column
 , event)
-from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy.orm import (
     mapper,
     relationship
 )
+from sqlalchemy.sql.schema import ForeignKeyConstraint
+from sqlalchemy.sql.type_api import TypeDecorator
 from zope.sqlalchemy.datamanager import mark_changed
 
 from gengine.metadata import Base, DBSession
@@ -76,7 +79,47 @@ create_cache("translations")
 create_cache("goal_evaluation")
 create_cache("goal_statements")
 
+class GUID(TypeDecorator):
+    """Platform-independent GUID type.
+
+    Uses Postgresql's UUID type, otherwise uses
+    CHAR(32), storing as stringified hex values.
+
+    """
+    impl = ty.CHAR
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(UUID())
+        else:
+            return dialect.type_descriptor(ty.CHAR(32))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        elif dialect.name == 'postgresql':
+            return str(value)
+        else:
+            if not isinstance(value, uuid.UUID):
+                return "%.32x" % uuid.UUID(value)
+            else:
+                # hexstring
+                return "%.32x" % value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        else:
+            return uuid.UUID(value)
+
+#PG_GUID_DEFAULT = text("md5(random()::text || clock_timestamp()::text)::uuid")
+
+t_projects = Table("projects", Base.metadata,
+    Column('id', GUID, primary_key = True),
+)
+
 t_users = Table("users", Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id", ondelete="CASCADE"), primary_key = True),
     Column('id', ty.BigInteger, primary_key = True),
     Column("lat", ty.Float(Precision=64), nullable=True),
     Column("lng", ty.Float(Precision=64), nullable=True),
@@ -88,25 +131,42 @@ t_users = Table("users", Base.metadata,
 )
 
 t_users_users = Table("users_users", Base.metadata,
-    Column('from_id', ty.BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key = True, nullable=False),
-    Column('to_id', ty.BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key = True, nullable=False)
+    Column('project_id', GUID, primary_key = True),
+    Column('from_id', ty.BigInteger, primary_key = True),
+    Column('to_id', ty.BigInteger, primary_key = True),
+    ForeignKeyConstraint (
+      ['from_id','project_id'], ['users.id', 'users.project_id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+      ['to_id', 'project_id'], ['users.id', 'users.project_id'], ondelete="CASCADE"
+    )
 )
 
 t_groups = Table("groups", Base.metadata,
-    Column('id', ty.BigInteger, primary_key = True),
+    Column('project_id', GUID, ForeignKey("projects.id", ondelete="CASCADE"), primary_key = True),
+    Column('id', ty.BigInteger, primary_key = True)
 )
 
 t_users_groups = Table("users_groups", Base.metadata,
-    Column('user_id', ty.BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key = True, nullable=False),
-    Column('group_id', ty.BigInteger, ForeignKey("groups.id", ondelete="CASCADE"), primary_key = True, nullable=False)
+    Column('project_id', GUID, primary_key = True),
+    Column('user_id', ty.BigInteger, primary_key = True),
+    Column('group_id', ty.BigInteger, primary_key = True),
+    ForeignKeyConstraint(
+        ['project_id', 'user_id'], ['users.project_id', 'users.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'group_id'], ['groups.project_id', 'groups.id'], ondelete="CASCADE"
+    )
 )
 
 t_achievementcategories = Table('achievementcategories', Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id", ondelete="CASCADE"), primary_key = True),
     Column('id', ty.Integer, primary_key = True),
     Column('name', ty.String(255), nullable = False),
 )
 
 t_achievements = Table('achievements', Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
     Column('id', ty.Integer, primary_key = True),
     Column("achievementcategory_id", ty.Integer, ForeignKey("achievementcategories.id", ondelete="SET NULL"), index=True, nullable=True),
     Column('name', ty.String(255), nullable = False), #internal use
@@ -122,9 +182,10 @@ t_achievements = Table('achievements', Base.metadata,
 )
 
 t_goals = Table("goals", Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
     Column('id', ty.Integer, primary_key = True),
     Column('name', ty.String(255), nullable = False, default=""), #internal use
-    Column('name_translation_id', ty.Integer, ForeignKey("translationvariables.id", ondelete="RESTRICT"), nullable = True),
+    Column('name_translation_id', ty.Integer, nullable = True),
     #TODO: deprecate name_translation
     Column('condition', ty.String(255), nullable=True),
     Column('evaluation',ty.Enum("immediately","daily","weekly","monthly","yearly","end", name="evaluation_types")),
@@ -136,103 +197,189 @@ t_goals = Table("goals", Base.metadata,
     Column('maxmin', ty.Enum("max","min", name="goal_maxmin"), nullable=True, default="max"),
     Column('achievement_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), nullable=False),
     Column('priority', ty.Integer, index=True, default=0),
+
+    ForeignKeyConstraint(
+        ['project_id', 'name_translation_id'], ['translationvariables.project_id', 'translationvariables.id'], ondelete="RESTRICT"
+    )
 ) 
 
 t_goal_evaluation_cache = Table("goal_evaluation_cache", Base.metadata,
-    Column("goal_id", ty.Integer, ForeignKey("goals.id", ondelete="CASCADE"), primary_key=True, nullable=False),
-    Column("user_id", ty.BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, nullable=False),
+    Column('project_id', GUID, primary_key = True),
+    Column("goal_id", ty.Integer, primary_key=True),
+    Column("user_id", ty.BigInteger, primary_key=True),
     Column("achieved", ty.Boolean),
     Column("value", ty.Float),
+    ForeignKeyConstraint(
+        ['project_id', 'user_id'], ['users.project_id', 'users.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'goal_id'], ['goals.project_id', 'goals.id'], ondelete="CASCADE"
+    )
 )
 
 t_variables = Table('variables', Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
     Column('id', ty.Integer, primary_key = True),
     Column('name', ty.String(255), nullable = False, index=True),
     Column('group', ty.Enum("year","month","week","day","none", name="variable_group_types"), nullable = False, default="none"),
 )
 
 t_values = Table('values', Base.metadata,
-    Column('user_id', ty.BigInteger, ForeignKey("users.id", ondelete="CASCADE"), primary_key = True, nullable=False),
+    Column('project_id', GUID, primary_key = True),
+    Column('user_id', ty.BigInteger, primary_key = True, nullable=False),
     Column('datetime', TIMESTAMP(timezone=True), primary_key = True, default=datetime.datetime.utcnow),
-    Column('variable_id', ty.Integer, ForeignKey("variables.id", ondelete="CASCADE"), primary_key = True, nullable=False),
+    Column('variable_id', ty.Integer, primary_key = True, nullable=False),
     Column('value', ty.Integer, nullable = False),
     Column('key', ty.String(100), primary_key=True, default=""),
+    ForeignKeyConstraint(
+        ['project_id', 'user_id'], ['users.project_id', 'users.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'variable_id'], ['variables.project_id', 'variables.id'], ondelete="CASCADE"
+    )
 )
 
 t_achievementproperties = Table('achievementproperties', Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
     Column('id', ty.Integer, primary_key = True),
     Column('name', ty.String(255), nullable = False),
     Column('is_variable', ty.Boolean, nullable = False, default=False),
 )
 
 t_achievements_achievementproperties = Table('achievements_achievementproperties', Base.metadata,
-    Column('achievement_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), primary_key = True, nullable=False),
-    Column('property_id', ty.Integer, ForeignKey("achievementproperties.id", ondelete="CASCADE"), primary_key = True, nullable=False),
+    Column('project_id', GUID, primary_key = True),
+    Column('achievement_id', ty.Integer, primary_key = True),
+    Column('property_id', ty.Integer, primary_key = True),
     Column('value', ty.String(255), nullable = True),
-    Column('value_translation_id', ty.Integer, ForeignKey("translationvariables.id", ondelete="RESTRICT"), nullable = True),
+    Column('value_translation_id', ty.Integer, nullable = True),
     Column('from_level', ty.Integer, nullable = False, default=0, primary_key = True),
+
+    ForeignKeyConstraint(
+        ['project_id', 'achievement_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'property_id'], ['achievementproperties.project_id', 'achievementproperties.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'value_translation_id'], ['translationvariables.project_id', 'translationvariables.id'], ondelete="RESTRICT"
+    )
 )
 
 t_goalproperties = Table('goalproperties', Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
     Column('id', ty.Integer, primary_key = True),
     Column('name', ty.String(255), nullable = False),
     Column('is_variable', ty.Boolean, nullable = False, default=False),
 )
 
 t_goals_goalproperties = Table('goals_goalproperties', Base.metadata,
-    Column('goal_id', ty.Integer, ForeignKey("goals.id", ondelete="CASCADE"), primary_key = True, nullable=False),
-    Column('property_id', ty.Integer, ForeignKey("goalproperties.id", ondelete="CASCADE"), primary_key = True, nullable=False),
+    Column('project_id', GUID, primary_key = True),
+    Column('goal_id', ty.Integer, primary_key = True),
+    Column('property_id', ty.Integer, primary_key = True),
     Column('value', ty.String(255), nullable = True),
-    Column('value_translation_id', ty.Integer, ForeignKey("translationvariables.id", ondelete="RESTRICT"), nullable = True),
+    Column('value_translation_id', ty.Integer, nullable = True),
     Column('from_level', ty.Integer, nullable = False, default=0, primary_key = True),
+
+    ForeignKeyConstraint(
+        ['project_id', 'goal_id'], ['goals.project_id', 'goals.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'property_id'], ['goalproperties.project_id', 'goalproperties.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'value_translation_id'], ['translationvariables.project_id', 'translationvariables.id'], ondelete="RESTRICT"
+    )
 )
 
 t_rewards = Table('rewards', Base.metadata,
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
     Column('id', ty.Integer, primary_key = True),
     Column('name', ty.String(255), nullable = False),
 )
 
 t_achievements_rewards = Table('achievements_rewards', Base.metadata,
-    Column('id', ty.Integer, primary_key = True),
-    Column('achievement_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), index = True, nullable=False),
-    Column('reward_id', ty.Integer, ForeignKey("rewards.id", ondelete="CASCADE"), index = True, nullable=False),
+    Column('project_id', GUID, primary_key=True),
+    Column('achievement_id', ty.Integer, primary_key=True),
+    Column('reward_id', ty.Integer, primary_key=True),
     Column('value', ty.String(255), nullable = True),
-    Column('value_translation_id', ty.Integer, ForeignKey("translationvariables.id"), nullable = True),
-    Column('from_level', ty.Integer, nullable = False, default=1, index = True)
+    Column('value_translation_id', ty.Integer, nullable = True),
+    Column('from_level', ty.Integer, default=1, primary_key = True),
+    ForeignKeyConstraint(
+       ['project_id', 'achievement_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+       ['project_id', 'reward_id'], ['rewards.project_id', 'rewards.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'value_translation_id'], ['translationvariables.project_id', 'translationvariables.id'], ondelete="RESTRICT"
+    )
 )
 
 t_achievements_users = Table('achievements_users', Base.metadata,
+    Column('project_id', GUID, primary_key = True),
     Column('user_id', ty.BigInteger, ForeignKey("users.id"), primary_key = True, index=True, nullable=False),
     Column('achievement_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), primary_key = True, nullable=False),
     Column('level', ty.Integer, primary_key = True, default=1),
     Column('updated_at', ty.DateTime, nullable = False, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow),
+
+    ForeignKeyConstraint(
+         ['project_id', 'user_id'], ['users.project_id', 'users.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+         ['project_id', 'achievement_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
+    ),
 )
 
 t_requirements = Table('requirements', Base.metadata,
-    Column('from_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), primary_key = True, nullable=False),
-    Column('to_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), primary_key = True, nullable=False),
+    Column('project_id', GUID, primary_key = True),
+    Column('from_id', ty.Integer, primary_key = True),
+    Column('to_id', ty.Integer, primary_key = True),
+
+    ForeignKeyConstraint(
+       ['project_id', 'from_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+       ['project_id', 'to_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
+    ),
 )
 
 t_denials = Table('denials', Base.metadata,
-    Column('from_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), primary_key = True, nullable=False),
-    Column('to_id', ty.Integer, ForeignKey("achievements.id", ondelete="CASCADE"), primary_key = True, nullable=False),
+    Column('project_id', GUID, primary_key = True),
+    Column('from_id', ty.Integer, primary_key = True),
+    Column('to_id', ty.Integer, primary_key = True),
+
+    ForeignKeyConstraint(
+        ['project_id', 'from_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'to_id'], ['achievements.project_id', 'achievements.id'], ondelete="CASCADE"
+    ),
 )
 
 t_languages = Table('languages', Base.metadata,
-   Column('id', ty.Integer, primary_key = True),
-   Column('name', ty.String(255), nullable = False),
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
+    Column('id', ty.Integer, primary_key = True),
+    Column('name', ty.String(255), nullable = False),
 )
 
 t_translationvariables = Table('translationvariables', Base.metadata,
-   Column('id', ty.Integer, primary_key = True),
-   Column('name', ty.String(255), nullable = False),
+    Column('project_id', GUID, ForeignKey("projects.id"), primary_key=True),
+    Column('id', ty.Integer, primary_key = True),
+    Column('name', ty.String(255), nullable = False),
 )
 
 t_translations = Table('translations', Base.metadata,
-   Column('id', ty.Integer, primary_key = True),
-   Column('translationvariable_id', ty.Integer, ForeignKey("translationvariables.id", ondelete="CASCADE"), nullable = False),
-   Column('language_id', ty.Integer, ForeignKey("languages.id", ondelete="CASCADE"), nullable = False),
-   Column('text', ty.Text(), nullable = False),
+    Column('project_id', GUID, primary_key = True),
+    Column('translationvariable_id', ty.Integer, primary_key=True),
+    Column('language_id', ty.Integer, primary_key=True),
+    Column('text', ty.Text(), nullable = False),
+
+    ForeignKeyConstraint(
+        ['project_id', 'translationvariable_id'], ['translationvariables.project_id', 'translationvariables.id'], ondelete="CASCADE"
+    ),
+    ForeignKeyConstraint(
+        ['project_id', 'language_id'], ['languages.project_id', 'languages.id'], ondelete="CASCADE"
+    ),
 )
 
 class ABase(object):
@@ -1207,68 +1354,162 @@ class Translation(ABase):
             
 mapper(User, t_users, properties={
     'friends': relationship(User, secondary=t_users_users, 
-                                 primaryjoin=t_users.c.id==t_users_users.c.from_id,
-                                 secondaryjoin=t_users.c.id==t_users_users.c.to_id)
+                                  primaryjoin=and_(
+                                      t_users.c.id==t_users_users.c.from_id,
+                                      t_users.c.project_id==t_users_users.c.project_id
+                                  ),
+                                  secondaryjoin=and_(
+                                      t_users.c.id==t_users_users.c.to_id,
+                                      t_users.c.project_id==t_users_users.c.project_id
+                                  )
+                            )
 })
 
 mapper(Group, t_groups, properties={
-    'users' : relationship(User, secondary=t_users_groups, backref="groups"), 
+    'users' : relationship(User, secondary=t_users_groups,
+                           primaryjoin=and_(
+                               t_users.c.id == t_users_groups.c.user_id,
+                               t_users.c.project_id == t_users_groups.c.project_id
+                           ),
+                           secondaryjoin=and_(
+                               t_groups.c.id == t_users_groups.c.group_id,
+                               t_groups.c.project_id == t_users_groups.c.project_id
+                           ),
+                           backref="groups"),
 })
 
 mapper(Variable, t_variables, properties={
-   'values' : relationship(Value),
+    'values': relationship(Value, primaryjoin=and_(
+        t_variables.c.id == t_values.c.variable_id,
+        t_variables.c.project_id == t_values.c.project_id
+    ), ),
 })
+
 mapper(Value, t_values,properties={
-   'user' : relationship(User),
-   'variable' : relationship(Variable)
+   'user' : relationship(User, primaryjoin=and_(
+        t_values.c.user_id == t_users.c.id,
+        t_values.c.project_id == t_users.c.project_id
+    ), ),
+   'variable' : relationship(Variable, primaryjoin=and_(
+        t_values.c.variable_id == t_variables.c.id,
+        t_values.c.project_id == t_variables.c.project_id
+    ), )
 })
+
 mapper(AchievementCategory, t_achievementcategories)
+
 mapper(Achievement, t_achievements, properties={
-   'requirements': relationship(Achievement, secondary=t_requirements, 
-                                primaryjoin=t_achievements.c.id==t_requirements.c.from_id,
-                                secondaryjoin=t_achievements.c.id==t_requirements.c.to_id,
-                                ),
-   'denials': relationship(Achievement, secondary=t_denials,
-                           primaryjoin=t_achievements.c.id==t_denials.c.from_id,
-                           secondaryjoin=t_achievements.c.id==t_denials.c.to_id,
-                           ),
-   'users': relationship(AchievementUser, backref='achievement'),
-   'properties' : relationship(AchievementAchievementProperty, backref='achievement'),
-   'rewards' : relationship(AchievementReward, backref='achievement'),
-   'goals': relationship(Goal, backref='achievement'),
-   'achievementcategory' : relationship(AchievementCategory, backref='achievements')
+    'requirements': relationship(Achievement, secondary=t_requirements,
+                                 primaryjoin=and_(
+                                     t_achievements.c.id == t_requirements.c.from_id,
+                                     t_achievements.c.project_id == t_requirements.c.project_id,
+                                 ),
+                                 secondaryjoin=and_(
+                                     t_achievements.c.id == t_requirements.c.to_id,
+                                     t_achievements.c.project_id == t_requirements.c.project_id,
+                                 )
+                                 ),
+    'denials': relationship(Achievement, secondary=t_denials,
+                            primaryjoin=and_(
+                                t_achievements.c.id == t_denials.c.from_id,
+                                t_achievements.c.project_id == t_denials.c.project_id,
+                            ),
+                            secondaryjoin=and_(
+                                t_achievements.c.id == t_denials.c.to_id,
+                                t_achievements.c.project_id == t_denials.c.project_id,
+                            )
+                            ),
+    'users': relationship(AchievementUser,
+                          primaryjoin=and_(
+                              t_achievements.c.id == t_achievements_users.c.achievement_id,
+                              t_achievements.c.project_id == t_users.c.project_id,
+                          ),
+                          backref='achievement'),
+    'properties': relationship(AchievementAchievementProperty, primaryjoin=and_(
+        t_achievements.c.id == t_achievements_achievementproperties.c.achievement_id,
+        t_achievements.c.project_id == t_achievements_achievementproperties.c.project_id,
+    ), backref='achievement'),
+    'rewards': relationship(AchievementReward, primaryjoin=and_(
+        t_achievements.c.id == t_achievements_rewards.c.achievement_id,
+        t_achievements.c.project_id == t_achievements_rewards.c.project_id,
+    ), backref='achievement'),
+    'goals': relationship(Goal, primaryjoin=and_(
+        t_achievements.c.id == t_goals.c.achievement_id,
+        t_achievements.c.project_id == t_goals.c.project_id,
+    ), backref='achievement'),
+    'achievementcategory': relationship(AchievementCategory, primaryjoin=and_(
+        t_achievements.c.achievementcategory_id == t_achievementcategories.c.id,
+        t_achievements.c.project_id == t_achievementcategories.c.project_id,
+    ), backref='achievements')
 })
+
 mapper(AchievementProperty, t_achievementproperties)
 mapper(AchievementAchievementProperty, t_achievements_achievementproperties, properties={
-   'property' : relationship(AchievementProperty, backref='achievements'),
-   'value_translation' : relationship(TranslationVariable)
+    'property': relationship(AchievementProperty, primaryjoin=and_(
+        t_achievements_achievementproperties.c.property_id == t_achievementproperties.c.id,
+        t_achievements_achievementproperties.c.project_id == t_achievementproperties.c.project_id,
+    ), backref='achievements'),
+    'value_translation': relationship(TranslationVariable, primaryjoin=and_(
+        t_achievements_achievementproperties.c.value_translation_id == t_translationvariables.c.id,
+        t_achievements_achievementproperties.c.project_id == t_translationvariables.c.project_id,
+    ), )
 })
 mapper(Reward, t_rewards)
 mapper(AchievementReward, t_achievements_rewards, properties={
-   'reward' : relationship(Reward, backref='achievements'),
-   'value_translation' : relationship(TranslationVariable)
+    'reward': relationship(Reward, primaryjoin=and_(
+        t_achievements_rewards.c.reward_id == t_rewards.c.id,
+        t_achievements_rewards.c.project_id == t_rewards.c.project_id,
+    ), backref='achievements'),
+    'value_translation': relationship(TranslationVariable, primaryjoin=and_(
+        t_achievements_rewards.c.value_translation_id == t_translationvariables.c.id,
+        t_achievements_rewards.c.project_id == t_translationvariables.c.project_id,
+    ))
 })
 mapper(AchievementUser, t_achievements_users)
 
 mapper(Goal, t_goals, properties={
-    'name_translation' : relationship(TranslationVariable),
-    'properties' : relationship(GoalGoalProperty, backref='goal'),
+    'name_translation' : relationship(TranslationVariable, primaryjoin=and_(
+        t_goals.c.name_translation_id == t_translationvariables.c.id,
+        t_goals.c.project_id == t_translationvariables.c.project_id,
+    )),
+    'properties' : relationship(GoalGoalProperty, primaryjoin = and_(
+        t_goals.c.id == t_goals_goalproperties.c.goal_id,
+        t_goals.c.project_id == t_goals_goalproperties.c.project_id,
+    ), backref='goal'),
 })
 mapper(GoalProperty, t_goalproperties)
 mapper(GoalGoalProperty, t_goals_goalproperties, properties={
-   'property' : relationship(GoalProperty, backref='goals'),
-   'value_translation' : relationship(TranslationVariable)
+   'property' : relationship(GoalProperty, primaryjoin = and_(
+       t_goals_goalproperties.c.property_id == t_goalproperties.c.id,
+       t_goals_goalproperties.c.project_id == t_goalproperties.c.project_id,
+    ), backref='goals'),
+   'value_translation' : relationship(TranslationVariable, primaryjoin=and_(
+       t_goals_goalproperties.c.value_translation_id == t_translationvariables.c.id,
+       t_goals_goalproperties.c.project_id == t_translationvariables.c.project_id,
+    ))
 })
-mapper(GoalEvaluationCache, t_goal_evaluation_cache,properties={
-   'user' : relationship(User),
-   'goal' : relationship(Goal)
+mapper(GoalEvaluationCache, t_goal_evaluation_cache, properties={
+   'user' : relationship(User, primaryjoin = and_(
+       t_goal_evaluation_cache.c.user_id == t_users.c.id,
+       t_goal_evaluation_cache.c.project_id == t_users.c.project_id
+    ), ),
+   'goal' : relationship(Goal, primaryjoin = and_(
+       t_goal_evaluation_cache.c.goal_id == t_goals.c.id,
+       t_goal_evaluation_cache.c.project_id == t_goals.c.project_id
+    ), )
 })
 
 mapper(Language, t_languages)
 mapper(TranslationVariable,t_translationvariables)
 mapper(Translation, t_translations, properties={
-   'language' : relationship(Language),
-   'translationvariable' : relationship(TranslationVariable, backref="translations"),
+   'language' : relationship(Language, primaryjoin = and_(
+       t_translations.c.language_id == t_languages.c.id,
+       t_translations.c.project_id == t_languages.c.project_id
+    )),
+   'translationvariable' : relationship(TranslationVariable, primaryjoin = and_(
+       t_translations.c.translationvariable_id == t_translationvariables.c.id,
+       t_translations.c.project_id == t_translationvariables.c.project_id
+    ), backref="translations"),
 })
 
 @event.listens_for(AchievementProperty, "after_insert")
