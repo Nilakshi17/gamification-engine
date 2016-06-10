@@ -95,7 +95,7 @@ def init_flaskadmin(urlprefix="",secret="fKY7kJ2xSrbPC5yieEjV",override_admin=No
     admin.add_view(ModelView(AchievementUser, DBSession, category="Debug"))
 
 class TranslationInlineModelForm(InlineFormAdmin):
-    form_columns = ('id','language','text')
+    form_columns = ('language','text')
 
 class ModelViewTranslationVariable(ModelView):
     column_list = ('name',)
