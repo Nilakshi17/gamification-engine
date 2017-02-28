@@ -36,7 +36,7 @@ class TestAchievement(BaseDBTest):
             lng = 65.75,
             country = "DE",
             region = "Niedersachsen",
-            city = "Osnabrück",
+            city = "Hannover",
             timezone = "Europe/Berlin",
             language = "de",
             additional_public_data = {
