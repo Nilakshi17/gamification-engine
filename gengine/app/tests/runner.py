@@ -3,10 +3,15 @@ from gengine.metadata import init_declarative_base, init_session
 import unittest
 import os
 import pkgutil
-import testing.redis
 import logging
+import sys
 
 log = logging.getLogger(__name__)
+
+try:
+    import testing.redis
+except ImportError as e:
+    log.info("testing.redis not installed")
 
 init_session()
 init_declarative_base()
@@ -22,6 +27,7 @@ def create_test_suite():
     return suite
 
 if __name__=="__main__":
+    exit = 1
     try:
         redis = testing.redis.RedisServer()
 
@@ -34,7 +40,9 @@ if __name__=="__main__":
 
         db.setupDB()
         testSuite = create_test_suite()
-        text_runner = unittest.TextTestRunner().run(testSuite)
+        text_runner = unittest.TextTestRunner(failfast=True).run(testSuite)
+        if text_runner.wasSuccessful():
+            exit = 0
     finally:
         try:
             db.unsetupDB()
@@ -44,3 +52,4 @@ if __name__=="__main__":
             redis.stop()
         except:
             log.exception()
+    sys.exit(exit)

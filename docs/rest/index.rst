@@ -18,6 +18,8 @@ Add or update user data
          - region (String city)
          - friends (comma separated list of user Ids)
          - groups (comma separated list of group Ids)
+         - language (name)
+         - additional_public_data (JSON)
          
    - add or updates a user with Id {userId} and Post parameters into the engines database
    - if friends Ids are not registered a empty record with only the user Id will be created
@@ -32,12 +34,13 @@ Delete a user
 Increase Value
 ==============
    
-   - POST to "/increase_value/{variable_name}/{userId}"
+   - POST to "/increase_value/{variable_name}/{userId}/{key}"
       - URL parameters:
          - variable_name (the name of the variable to increase or decrease)
          - userId (the Id of the user)
-	  - POST parameters:
-		 - value (the increase/decrease value in Double)
+         - key (an optional key, describing the context of the event, can be used in rules)
+      - POST parameters:
+         - value (the increase/decrease value in Double)
 	
    - if the userId is not registered an error will be thrown
    - directly evaluates all goals associated with this variable_name
@@ -48,17 +51,17 @@ Increase multiple Values at once
    
    - POST to "/increase_multi_values"
       - JSON request body:
-        .. code:: json
-        {
-            "{userId}" : {
-                "{variable}" : [
-                    {
-                        "key" : "{key}",
-                        "value" : "{value}"
-                    }
-                ]
-            }
-        }
+           .. code:: json
+           {
+               "{userId}" : {
+                   "{variable}" : [
+                       {
+                           "key" : "{key}",
+                           "value" : "{value}"
+                       }
+                   ]
+               }
+           }
     
     - directly evaluates all goals associated with the given variables
     - directly returns new reached achievements
@@ -75,9 +78,9 @@ Get Progress
 Get a single achievement Level
 ==============================
 
-   - GET to "/increase_value/{variable_name}/{userId}"
+   - GET to "/achievement/{achievement_id}/level/{level}"
 
-   - can be used to check if a user is allowed to use a reward
+   - retrieves information about the rewards/properties of an achievement level
 
 Authentication
 ==============================

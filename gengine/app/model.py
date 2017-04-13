@@ -298,6 +298,7 @@ t_user_messages = Table('user_messages', Base.metadata,
     Column('translation_id', ty.Integer, ForeignKey("translationvariables.id", ondelete="RESTRICT"), nullable = True),
     Column('params', JSON(), nullable=True, default={}),
     Column('is_read', ty.Boolean, index=True, default=False, nullable=False),
+    Column('has_been_pushed', ty.Boolean, index=True, default=True, server_default='0', nullable=False),
     Column('created_at', ty.DateTime(), nullable=False, default=datetime.datetime.utcnow, index=True),
 )
 
@@ -346,7 +347,7 @@ class AuthUser(ABase):
             import argon2
             import crypt
             import base64
-            self.password_salt = crypt.mksalt()
+            self.password_salt = crypt.mksalt()+crypt.mksalt()+crypt.mksalt()+crypt.mksalt()+crypt.mksalt()
             hash = argon2.argon2_hash(new_pw, self.password_salt)
             self.password_hash = base64.b64encode(hash).decode("UTF-8")
 
@@ -684,17 +685,17 @@ class Variable(ABase):
         return m
 
     @classmethod
-    def invalidate_caches_for_variable_and_user(cls,variable_id,user_id):
+    def invalidate_caches_for_variable_and_user(cls, variable_id, user_id, dt):
         """ invalidate the relevant caches for this user and all relevant users with concerned leaderboards"""
-        goalsandachievements = cls.map_variables_to_rules().get(variable_id,[])
+        goalsandachievements = cls.map_variables_to_rules().get(variable_id, [])
 
         Goal.clear_goal_caches(user_id, [
-            (entry["goal"]["id"], Achievement.get_datetime_for_evaluation_type(entry["achievement"]["evaluation_timezone"], entry["achievement"]["evaluation"]))
+            (entry["goal"]["id"], Achievement.get_datetime_for_evaluation_type(entry["achievement"]["evaluation_timezone"], entry["achievement"]["evaluation"], dt=dt))
                 for entry in goalsandachievements
             ]
         )
         for entry in goalsandachievements:
-            achievement_date = Achievement.get_datetime_for_evaluation_type(entry["achievement"]["evaluation_timezone"], entry["achievement"]["evaluation"])
+            achievement_date = Achievement.get_datetime_for_evaluation_type(entry["achievement"]["evaluation_timezone"], entry["achievement"]["evaluation"],dt=dt)
             Achievement.invalidate_evaluate_cache(user_id, entry["achievement"], achievement_date)
 
     @classmethod
@@ -729,9 +730,9 @@ class Value(ABase):
         tz = user["timezone"]
 
         variable = Variable.get_variable_by_name(variable_name)
-        dt = Variable.get_datetime_for_tz_and_group(tz,variable["group"],at_datetime=at_datetime)
+        dt = Variable.get_datetime_for_tz_and_group(tz, variable["group"], at_datetime=at_datetime)
 
-        key = None if key is None else str(key)
+        key = '' if key is None else str(key)
 
         condition = and_(t_values.c.datetime == dt,
                          t_values.c.variable_id == variable["id"],
@@ -748,7 +749,7 @@ class Value(ABase):
                                            "key": key,
                                            "value": value}))
 
-        Variable.invalidate_caches_for_variable_and_user(variable["id"],user["id"])
+        Variable.invalidate_caches_for_variable_and_user(variable_id=variable["id"], user_id=user["id"], dt = dt)
         new_value = DBSession.execute(select([t_values.c.value, ]).where(condition)).scalar()
         return new_value
 
@@ -1544,6 +1545,7 @@ class Goal(ABase):
                     t_goal_evaluation_cache.c.value])\
                 .where(and_(t_goal_evaluation_cache.c.user_id.in_(user_ids),
                             t_goal_evaluation_cache.c.goal_id==goal["id"],
+                            t_goal_evaluation_cache.c.achievement_date==achievement_date,
                             ))\
                 .order_by(t_goal_evaluation_cache.c.value.desc(),
                           t_goal_evaluation_cache.c.user_id.desc())
@@ -1551,7 +1553,9 @@ class Goal(ABase):
 
         users = User.get_users(user_ids)
 
-        missing_user_ids = set(user_ids)-set([x["user_id"] for x in items])
+        requested_user_ids = set(int(s) for s in user_ids)
+        values_found_for_user_ids = set([int(x["user_id"]) for x in items])
+        missing_user_ids = requested_user_ids - values_found_for_user_ids
         missing_users = User.get_users(missing_user_ids).values()
         if len(missing_users)>0:
             #the goal has not been evaluated for some users...
@@ -1685,7 +1689,6 @@ class UserMessage(ABase):
     @classmethod
     def deliver(cls, message):
         from gengine.app.push import send_push_message
-
         text = UserMessage.get_text(message)
         language = get_settings().get("fallback_language", "en")
         j = t_users.join(t_languages)
@@ -1694,12 +1697,18 @@ class UserMessage(ABase):
              language = user_language["name"]
         translated_text = text[language]
 
-        send_push_message(
-            user_id = message["user_id"],
-            text = translated_text,
-            custom_payload = {},
-            title = get_settings().get("push_title","Gamification-Engine")
-        )
+        if not message["has_been_pushed"]:
+            try:
+                send_push_message(
+                    user_id = message["user_id"],
+                    text = translated_text,
+                    custom_payload = {},
+                    title = get_settings().get("push_title","Gamification-Engine")
+                )
+            except Exception as e:
+                log.error(e, exc_info=True)
+            else:
+                DBSession.execute(t_user_messages.update().values({ "has_been_pushed" : True }).where(t_user_messages.c.id == message["id"]))
 
 class GoalTrigger(ABase):
     def __unicode__(self, *args, **kwargs):
@@ -1729,9 +1738,9 @@ class GoalTriggerStep(ABase):
                         'percentage' : current_percentage
                     },**goal_properties),
                     is_read = False,
+                    has_been_pushed = False
                 )
                 uS.add(m)
-                UserMessage.deliver(m)
 
 @event.listens_for(GoalTriggerStep, "after_insert")
 @event.listens_for(GoalTriggerStep, 'after_update')

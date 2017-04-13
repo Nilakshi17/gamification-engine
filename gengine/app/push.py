@@ -1,8 +1,6 @@
-import logging
 import random
 import threading
-from apns import APNs, Payload
-from gcm import GCM
+
 import os
 from sqlalchemy.sql.expression import and_, select
 from sqlalchemy.sql.functions import func
@@ -13,7 +11,20 @@ from gengine.base.settings import get_settings
 from gengine.metadata import DBSession
 
 threadlocal = threading.local()
+
+import logging
 log = logging.getLogger(__name__)
+
+try:
+    from apns import APNs, Payload
+except ImportError as e:
+    log.info("tapns3 not installed")
+
+try:
+    from gcm import GCM
+except ImportError as e:
+    log.info("python-gcm not installed")
+
 
 def get_prod_apns():
     """
@@ -118,7 +129,6 @@ def gcm_feedback(response):
         for reg_id, success_id in response['success'].items():
             log.debug('Successfully sent notification for reg_id {0}'.format(reg_id))
 
-    uS = update_connection()
 
     # Handling errors
     if 'errors' in response:
@@ -129,7 +139,7 @@ def gcm_feedback(response):
                 # Remove reg_ids from database
                 for reg_id in reg_ids:
                     q = t_user_device.delete().where(t_user_device.c.push_id == reg_id)
-                    uS.execute(q)
+                    DBSession.execute(q)
 
     # Repace reg_id with canonical_id in your database
     if 'canonical' in response:
@@ -143,7 +153,9 @@ def gcm_feedback(response):
                 "push_id" : canonical_id
             }).where(t_user_device.c.push_id == reg_id)
 
-            uS.execute(q)
+            DBSession.execute(q)
+
+    DBSession.flush()
 
 def send_push_message(
         user_id,
