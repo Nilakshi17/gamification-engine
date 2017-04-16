@@ -233,7 +233,6 @@ class TestAchievement(BaseDBTest):
         self.assertEqual(result2, [])
 
     def test_evaluate_achievement_for_participate(self):
-
         achievement = create_achievement(achievement_name="participate_achievement", achievement_relevance="own", achievement_maxlevel=4)
 
         user = create_user()
@@ -262,10 +261,10 @@ class TestAchievement(BaseDBTest):
 
         level = Achievement.evaluate(user, achievement.id, achievement_date).get("level")
 
-        Value.increase_value(variable_name="participate", user=user, value=1, key="7")
+        Value.increase_value(variable_name="participate", user=user, value=1, key="7", at_datetime=achievement_date)
         level2 = Achievement.evaluate(user, achievement.id, achievement_date).get("level")
 
-        Value.increase_value(variable_name="participate", user=user, value=5, key="5")
+        Value.increase_value(variable_name="participate", user=user, value=5, key="5", at_datetime=achievement_date)
         level1 = Achievement.evaluate(user, achievement.id, achievement_date).get("level")
 
         self.assertEqual(level, 1)
@@ -273,7 +272,6 @@ class TestAchievement(BaseDBTest):
         self.assertEqual(level1, 4)
 
     def test_evaluate_achievement_for_invite_users(self):
-
         achievement = create_achievement(achievement_name="invite_users_achievement", achievement_relevance="friends", achievement_maxlevel=10)
 
         user = create_user()
@@ -284,7 +282,7 @@ class TestAchievement(BaseDBTest):
 
         update_connection().execute(t_values.delete())
         create_variable("invite_users", variable_group="day")
-        Value.increase_value(variable_name="invite_users", user=user, value=1, key=None)
+        Value.increase_value(variable_name="invite_users", user=user, value=1, key=None, at_datetime=achievement_date)
 
         create_goals(achievement,
                      goal_goal="1*level",
@@ -334,7 +332,7 @@ class TestAchievement(BaseDBTest):
         create_achievement_user(user=user, achievement=achievement, achievement_date=achievement_date, level=1)
 
         create_variable("invite_users", "none")
-        Value.increase_value(variable_name="invite_users", user=user, value=4, key="5")
+        Value.increase_value(variable_name="invite_users", user=user, value=4, key="5", at_datetime=achievement_date)
 
         create_goals(achievement = achievement,
                      goal_condition="""{"term": {"type": "literal", "variable": "invite_users"}}""",
@@ -380,9 +378,9 @@ class TestAchievement(BaseDBTest):
 
         variable1 = create_variable("participate_seminar", variable_group=None)
         variable2 = create_variable("participate_talk", variable_group=None)
-        Value.increase_value(variable1.name, user, "2", "5")
-        Value.increase_value(variable1.name, user, "3", "7")
-        Value.increase_value(variable2.name, user, "3", key=None)
+        Value.increase_value(variable1.name, user, "2", "5", at_datetime=achievement_date)
+        Value.increase_value(variable1.name, user, "3", "7", at_datetime=achievement_date)
+        Value.increase_value(variable2.name, user, "3", key=None, at_datetime=achievement_date)
 
         result = Achievement.evaluate(user, achievement.id, achievement_date)
         print("multiple_goals_of_same_achievement:",result)
